@@ -1,6 +1,6 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
-import HomePage from "./Pages/HomePage";
-import ChatPage from "./Pages/ChatPage";
+import HomePage from "./Pages/Home/HomePage";
+import ChatPage from "./Pages/Chat/ChatPage";
 
 function App() {
   return (
