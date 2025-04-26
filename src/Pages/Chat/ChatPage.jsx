@@ -1,16 +1,6 @@
-import React, { useEffect } from "react";
-import axios from "../../axios";
+import React from "react";
 
 const ChatPage = () => {
-  const fetchChats = async () => {
-    const data = await axios.get("/api/chats");
-    console.log(data);
-  };
-
-  useEffect(() => {
-    fetchChats();
-  }, []);
-
   return <div>ChatPage</div>;
 };
 

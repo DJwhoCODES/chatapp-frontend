@@ -1,7 +1,10 @@
 import React, { useState } from "react";
+import axios from "../../axios";
 import "./HomePage.css";
+import { useNavigate } from "react-router-dom";
 
 const HomePage = () => {
+  const navigate = useNavigate();
   const [isLogin, setIsLogin] = useState(true);
   const [formData, setFormData] = useState({
     name: "",
@@ -25,28 +28,38 @@ const HomePage = () => {
     e.preventDefault();
 
     try {
-      const dataToSend = new FormData();
+      let dataToSend;
+      let config = {};
 
-      if (!isLogin) {
+      if (isLogin) {
+        // For login - send as JSON
+        dataToSend = {
+          email: formData.email,
+          password: formData.password,
+        };
+        config.headers = {
+          "Content-Type": "application/json",
+        };
+      } else {
+        // For sign-up - send as FormData
+        dataToSend = new FormData();
         dataToSend.append("name", formData.name);
         dataToSend.append("pic", formData.pic);
+        dataToSend.append("email", formData.email);
+        dataToSend.append("password", formData.password);
         dataToSend.append("confirmPassword", formData.confirmPassword);
       }
 
-      dataToSend.append("email", formData.email);
-      dataToSend.append("password", formData.password);
+      const endpoint = isLogin ? "/api/user/login" : "/api/user/sign-up";
+      const response = await axios.post(endpoint, dataToSend, config);
 
-      const endpoint = isLogin ? "/api/login" : "/api/signup";
+      if (response.data && response.status === 200) {
+        navigate("/chat"); // Adjust the path if your chat page has a different route
+      }
 
-      const response = await fetch(endpoint, {
-        method: "POST",
-        body: dataToSend,
-      });
-
-      const result = await response.json();
-      console.log(result);
+      console.log(response);
     } catch (error) {
-      console.error("Error submitting form:", error);
+      console.error("Error:", error);
     }
   };
 
