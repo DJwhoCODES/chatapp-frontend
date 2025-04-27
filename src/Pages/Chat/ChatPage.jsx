@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./ChatPage.css";
 import axios from "../../axios";
 import {
@@ -12,9 +12,11 @@ import {
 } from "react-icons/fi";
 import { FaUserCircle } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
+import io from "socket.io-client";
 
 const ChatPage = () => {
   const navigate = useNavigate();
+  const messagesEndRef = useRef(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const [showMembers, setShowMembers] = useState(isMobile);
   const [showChat, setShowChat] = useState(!isMobile);
@@ -34,7 +36,11 @@ const ChatPage = () => {
 
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
+  const [socket, setSocket] = useState(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingUser, setTypingUser] = useState("");
 
+  // Handle window resize
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth < 768;
@@ -53,20 +59,78 @@ const ChatPage = () => {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  // Load user data from localStorage
+  useEffect(() => {
+    const storedUserData = JSON.parse(localStorage.getItem("userData"));
+    if (storedUserData && !userData) {
+      setUserData(storedUserData);
+    }
+  }, []);
+
+  // Initialize socket connection
+  useEffect(() => {
+    if (!userData) return;
+
+    const newSocket = io(
+      process.env.REACT_APP_SOCKET_URL || "http://localhost:5051",
+      {
+        withCredentials: false,
+      }
+    );
+
+    newSocket.emit("setup", userData);
+
+    newSocket.on("connected", () => {
+      console.log("User connected to socket");
+
+      // Join the selected chat room
+      newSocket.emit("join chat", selectedChat?._id);
+    });
+
+    newSocket.on("message received", (newMessageReceived) => {
+      if (!selectedChat || selectedChat._id !== newMessageReceived.chat._id) {
+        // Notification logic could go here
+      } else {
+        setMessages([...messages, newMessageReceived]);
+      }
+    });
+
+    newSocket.on("typing", ({ user, chatId }) => {
+      if (selectedChat && selectedChat._id === chatId) {
+        setIsTyping(true);
+        setTypingUser(user.name);
+      }
+    });
+
+    newSocket.on("stop typing", ({ chatId }) => {
+      if (selectedChat && selectedChat._id === chatId) {
+        setIsTyping(false);
+      }
+    });
+
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, [userData, selectedChat, messages]);
+
+  // Fetch chats when user data is available
   useEffect(() => {
     const fetchChats = async () => {
+      if (!userData?._id) return;
+
       try {
         const res = await axios.get("/api/chat/fetch-chats", {
           headers: {
             Authorization: `Bearer ${getCookie("jwt")}`,
           },
         });
-        // Process chats to set proper chat names
+
         const processedChats = res.data.map((chat) => {
           if (!chat.isGroupChat) {
-            // For one-on-one chats, find the other user's name
             const otherUser = chat.users.find(
-              (user) => user._id !== userData?._id
+              (user) => user._id !== userData._id
             );
             return {
               ...chat,
@@ -75,19 +139,43 @@ const ChatPage = () => {
           }
           return chat;
         });
+
         setChats(processedChats);
       } catch (err) {
-        console.error(err);
+        console.error("Error fetching chats:", err);
       }
     };
 
-    const storedUserData = JSON.parse(localStorage.getItem("userData"));
-    setUserData(storedUserData);
-
-    if (storedUserData) {
-      fetchChats();
-    }
+    fetchChats();
   }, [userData?._id]);
+
+  // Fetch messages when chat is selected
+  useEffect(() => {
+    const fetchMessages = async () => {
+      if (!selectedChat?._id) return;
+
+      try {
+        const res = await axios.get(
+          `/api/message/all-messages/${selectedChat._id}`,
+          {
+            headers: {
+              Authorization: `Bearer ${getCookie("jwt")}`,
+            },
+          }
+        );
+        setMessages(res.data);
+      } catch (err) {
+        console.error("Error fetching messages:", err);
+      }
+    };
+
+    fetchMessages();
+  }, [selectedChat?._id]);
+
+  // Auto-scroll to bottom of messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isTyping]);
 
   const getCookie = (name) => {
     const value = `; ${document.cookie}`;
@@ -102,7 +190,10 @@ const ChatPage = () => {
   };
 
   const searchUsers = async () => {
-    if (!searchQuery.trim()) return;
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
 
     setIsSearching(true);
     try {
@@ -136,7 +227,6 @@ const ChatPage = () => {
         }
       );
 
-      // Process the chat to set proper name
       let processedChat = res.data;
       if (!processedChat.isGroupChat) {
         const otherUser = processedChat.users.find(
@@ -158,7 +248,7 @@ const ChatPage = () => {
       }
       setIsDrawerOpen(false);
     } catch (err) {
-      console.error(err);
+      console.error("Error accessing chat:", err);
     }
   };
 
@@ -182,7 +272,6 @@ const ChatPage = () => {
           },
         }
       );
-      // Filter out already selected users and current user
       const filteredResults = res.data.filter(
         (user) =>
           !selectedUsers.some((u) => u._id === user._id) &&
@@ -212,16 +301,13 @@ const ChatPage = () => {
       alert("Please provide a group name and add at least one member");
       return;
     }
-    const usersJsonString = JSON.stringify(
-      selectedUsers.map((user) => user._id)
-    );
 
     try {
       const res = await axios.post(
         "/api/chat/create-group",
         {
           chatName: groupName,
-          users: usersJsonString,
+          users: selectedUsers.map((user) => user._id),
         },
         {
           headers: {
@@ -230,7 +316,6 @@ const ChatPage = () => {
         }
       );
 
-      // Process the new group chat
       const newGroupChat = {
         ...res.data,
         chatName: res.data.chatName,
@@ -257,26 +342,9 @@ const ChatPage = () => {
     return chat.users.find((user) => user._id !== userData._id);
   };
 
-  const fetchMessages = async () => {
-    if (!selectedChat) return;
-    try {
-      const res = await axios.get(
-        `/api/message/all-messages/${selectedChat._id}`,
-        {
-          headers: {
-            Authorization: `Bearer ${getCookie("jwt")}`,
-          },
-        }
-      );
-      setMessages(res.data);
-    } catch (err) {
-      console.error("Error fetching messages:", err);
-    }
-  };
-
   const sendMessage = async (e) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() || !selectedChat) return;
 
     try {
       const res = await axios.post(
@@ -291,18 +359,53 @@ const ChatPage = () => {
           },
         }
       );
+
       setMessages([...messages, res.data]);
+      socket.emit("new message", res.data);
       setNewMessage("");
+
+      // Update latest message in chats
+      setChats(
+        chats.map((chat) =>
+          chat._id === selectedChat._id
+            ? { ...chat, latestMessage: res.data }
+            : chat
+        )
+      );
+      // Emit stop typing event
+      socket.emit("stop typing", selectedChat._id);
     } catch (err) {
       console.error("Error sending message:", err);
     }
   };
 
-  useEffect(() => {
-    if (selectedChat) {
-      fetchMessages();
+  const handleTyping = (e) => {
+    setNewMessage(e.target.value);
+
+    // Typing indicator logic
+    if (!socket) return;
+
+    if (!isTyping) {
+      setIsTyping(true);
+      socket.emit("typing", {
+        user: userData,
+        chatId: selectedChat._id,
+      });
     }
-  }, [selectedChat]);
+
+    const lastTypingTime = new Date().getTime();
+    const timerLength = 3000;
+
+    setTimeout(() => {
+      const timeNow = new Date().getTime();
+      const timeDiff = timeNow - lastTypingTime;
+
+      if (timeDiff >= timerLength && isTyping) {
+        socket.emit("stop typing", selectedChat._id);
+        setIsTyping(false);
+      }
+    }, timerLength);
+  };
 
   return (
     <div className="chat-app-container">
@@ -329,18 +432,20 @@ const ChatPage = () => {
           </div>
         </div>
         <div className="header-center">
-          <h2>DJwhoCODES</h2>
+          <h2>ChatApp</h2>
         </div>
         <div className="header-right">
           <FiBell className="icon" />
-          <FaUserCircle className="icon" />
+          <div className="user-profile">
+            <FaUserCircle className="icon" />
+            <span>{userData?.name}</span>
+          </div>
           <button className="logout-button" onClick={handleLogout}>
             Logout
           </button>
         </div>
       </header>
 
-      {/* In your JSX return statement, update the search drawer section like this: */}
       {isDrawerOpen && (
         <>
           <div
@@ -511,40 +616,54 @@ const ChatPage = () => {
             </div>
           </div>
 
-          {chats.map((chat) => {
-            const otherUser = getOtherUser(chat);
-            return (
-              <div
-                key={chat._id}
-                className={`chat-item ${
-                  selectedChat?._id === chat._id ? "selected" : ""
-                }`}
-                onClick={() => {
-                  setSelectedChat(chat);
-                  if (isMobile) {
-                    setShowMembers(false);
-                    setShowChat(true);
-                  }
-                }}
-              >
-                <div className="chat-avatar">
-                  {otherUser
-                    ? otherUser.name.charAt(0).toUpperCase()
-                    : chat.chatName.charAt(0).toUpperCase()}
-                </div>
-                <div className="chat-info">
-                  <div className="chat-name">
-                    {otherUser ? otherUser.name : chat.chatName}
-                  </div>
-                  {chat.latestMessage && (
-                    <div className="chat-preview">
-                      {chat.latestMessage.content}
+          <div className="chat-items-container">
+            {chats.length > 0 ? (
+              chats.map((chat) => {
+                const otherUser = getOtherUser(chat);
+                return (
+                  <div
+                    key={chat._id}
+                    className={`chat-item ${
+                      selectedChat?._id === chat._id ? "selected" : ""
+                    }`}
+                    onClick={() => {
+                      setSelectedChat(chat);
+                      if (isMobile) {
+                        setShowMembers(false);
+                        setShowChat(true);
+                      }
+                    }}
+                  >
+                    <div className="chat-avatar">
+                      {otherUser
+                        ? otherUser.name.charAt(0).toUpperCase()
+                        : chat.chatName.charAt(0).toUpperCase()}
                     </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+                    <div className="chat-info">
+                      <div className="chat-name">
+                        {otherUser ? otherUser.name : chat.chatName}
+                      </div>
+                      {chat.latestMessage && (
+                        <div className="chat-preview">
+                          {chat.latestMessage.sender._id === userData?._id
+                            ? "You: "
+                            : `${chat.latestMessage.sender.name}: `}
+                          {chat.latestMessage.content.length > 20
+                            ? `${chat.latestMessage.content.substring(
+                                0,
+                                20
+                              )}...`
+                            : chat.latestMessage.content}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="no-chats">No chats available</div>
+            )}
+          </div>
         </div>
 
         <div
@@ -570,30 +689,48 @@ const ChatPage = () => {
                         msg.sender._id === userData?._id ? "own-message" : ""
                       }`}
                     >
-                      <span className="message-sender">{msg.sender.name}:</span>
-                      <span className="message-content">{msg.content}</span>
+                      <div className="message-sender">
+                        {msg.sender._id !== userData?._id && (
+                          <span>{msg.sender.name}</span>
+                        )}
+                        <span className="message-time">
+                          {new Date(msg.createdAt).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                      <div className="message-content">{msg.content}</div>
                     </div>
                   ))
                 ) : (
                   <div className="empty-messages">No messages yet</div>
                 )}
+                {isTyping && (
+                  <div className="typing-indicator">
+                    <div className="typing-dots">
+                      <div></div>
+                      <div></div>
+                      <div></div>
+                    </div>
+                    <span>{typingUser} is typing...</span>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
               </div>
 
-              <div className="message-input-container">
+              <form className="message-input-container" onSubmit={sendMessage}>
                 <input
                   type="text"
                   className="message-input"
                   placeholder="Type a message..."
                   value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyPress={(e) => {
-                    if (e.key === "Enter") sendMessage();
-                  }}
+                  onChange={handleTyping}
                 />
-                <button className="send-button" onClick={sendMessage}>
+                <button type="submit" className="send-button">
                   Send
                 </button>
-              </div>
+              </form>
             </div>
           ) : (
             <div className="empty-chat">
