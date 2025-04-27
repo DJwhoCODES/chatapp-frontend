@@ -54,6 +54,7 @@ const HomePage = () => {
       const response = await axios.post(endpoint, dataToSend, config);
 
       if (response.data && response.status === 200) {
+        localStorage.setItem("userData", JSON.stringify(response.data));
         navigate("/chat"); // Adjust the path if your chat page has a different route
       }
 
